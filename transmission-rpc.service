@@ -1,0 +1,19 @@
+[Unit]
+Description=SSH Tunnel to transmission RPC port
+Wants=network-online.target
+After=network.target network-online.target
+
+[Service]
+# Create this user with: useradd -r -m -d /var/lib/transmission-rpc transmission-rpc
+# Then login, create an SSH key (no passphrase), and authorize the key, and approve the host as known:
+# sudo su - transmission-rpc
+# ssh-keygen -t rsa
+# cp ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
+# ssh localhost
+User=transmission-rpc
+Group=transmission-rpc
+ExecStart=/usr/bin/ssh -NT -L '*:9191:localhost:9091' localhost
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

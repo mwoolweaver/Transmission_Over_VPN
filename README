@@ -1,0 +1,74 @@
+# The approach is to mark packets from a specific user,
+# create a dedicated routing table with a default route
+# through the VPN, and force all marked packets to be
+# routed using that table.
+#
+# Sources:
+# https://www.niftiestsoftware.com/2011/08/28/making-all-network-traffic-for-a-linux-user-use-a-specific-network-interface/
+# http://freeaqingme.tweakblogs.net/blog/9340/netflix-using-a-vpn-for-just-one-application.html
+
+# In this guide
+# 10.8.0.2 IP of VPN tunnel interface (tun0) on machine running transmission
+# 1.1.1.1 IP of external interface (eth0) on the VPN server
+
+
+# add to /etc/iproute2/rt_tables:
+200 transmission
+
+#in /etc/openvpn/client.conf
+script-security 2
+up /etc/openvpn/client/up.sh
+
+# See up.sh file in this dir: /etc/openvpn/client/up.sh
+# creates fwmark rule and blackhole route to reject
+
+# In /etc/iptables/iptables.rules
+
+# This rule identifies packets from the user that we want to route through VPN
+# NOTE: To add another user, the only necessary step is to add another rule like this
+# NOTE: I think group won't work, because GID will match by the primary group of the
+# user that executing the app, not by membership of that user in a group.
+iptables -t mangle -A OUTPUT -m owner --uid-owner transmission -j MARK --set-mark 0x2
+
+iptables -t nat -A POSTROUTING -o tunoak -j SNAT --to-source 10.8.0.2
+
+# This rule rejects all pkts until the VPN starts up (up.sh removes this rule),
+# after vpn shuts down, the rejection is done by blackhole route (see up.sh)
+iptables -A OUTPUT -m mark --mark 0x2 -j REJECT
+
+# In /etc/sysctl.d/net.conf:
+net.ipv4.conf.all.rp_filter = 0
+net.ipv4.conf.tunoak.rp_filter = 0
+
+# On VPN server:
+
+iptables -t nat -A PREROUTING -i eth0 -p tcp -m tcp --dport 51413 -j DNAT --to-destination 10.8.0.2:51413
+iptables -t nat -A PREROUTING -i eth0 -p udp -m udp --dport 51413 -j DNAT --to-destination 10.8.0.2:51413
+
+# Main NAT rule: re-write source to the VPN server's external IP
+iptables -t nat -A POSTROUTING -s 10.7.0.0/24 -o eth0 -j SNAT --to-source 1.1.1.1
+
+# You can use systemd's iptables.service to restore iptables automatically on
+# boot, that you save with 'iptables-save > /etc/iptables/iptables.rules'
+
+# Also, on VPN server, in /etc/openvpn/server/server.conf comment out this line
+# to prevent openvpn server forcing the client to forward all traffic through the VPN:
+;push "redirect-gateway def1 bypass-dhcp"
+
+# Transmission /var/lib/transmission/.config/transmission-daemon/settings.json
+# Must bind to the VPN tun interface, because otherwise transmission communication
+# breaks across the NAT: netfilter # modifies the outgoing reply UDP packets
+# with wrong source port, because # conntrack can't detect the connection,
+# because it sees a source port from # an interface other than the tunnel
+# interface (despite the packet reaching the destination (it reaches, but
+# with the wrong source port, so transmission rejects it).
+"bind-address-ipv4": "10.8.0.2",
+
+# not necessary, but just to keep things simple: disable IPv6 by binding it to localhost
+"bind-address-ipv6": "::1",
+
+# cp /{usr/lib,etc}/systemd/system/transmission.service to disable UPnP port mapping:
+# Add --no-portmap
+
+# Because of the firewalling, we don't have access to RPC from outside the box
+# See transmission-rpc.service for creating SSH tunnel accessible to outside
